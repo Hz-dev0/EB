@@ -213,8 +213,8 @@ onAuthStateChanged(auth, async user => {
         document.getElementById("login-screen").style.display = "flex";
         document.getElementById("app").style.display = "none";
       } else {
-        // other errors (network etc) — stay logged in, show toast
-        toast("載入失敗：" + err.message);
+        // other errors — stay logged in, log only
+        console.warn("loadEntries non-fatal error:", err.message);
       }
     }
   } else {
