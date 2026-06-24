@@ -3,567 +3,465 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>經驗書 · Experience Journal</title>
+<title>經驗書</title>
 
-<!-- Firebase -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600&family=Caveat:wght@600;700&display=swap" rel="stylesheet">
+
 <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
-  import {
-    getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
-  } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-auth.js";
-  import {
-    getFirestore, collection, doc, addDoc, updateDoc, deleteDoc,
-    getDocs, query, orderBy, serverTimestamp
-  } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/11.0.0/firebase-auth.js";
+import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc,
+  getDocs, query, orderBy, serverTimestamp }
+  from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
 
-  const firebaseConfig = {
-    apiKey: "AIzaSyCBDKAOWQxc7oQz5IOhYVeaWpgbItp_glI",
-    authDomain: "lumos-c6ccc.firebaseapp.com",
-    projectId: "lumos-c6ccc",
-    storageBucket: "lumos-c6ccc.firebasestorage.app",
-    messagingSenderId: "914721288327",
-    appId: "1:914721288327:web:6539b1770c23f007858822"
-  };
+const firebaseConfig = {
+  apiKey: "AIzaSyCBDKAOWQxc7oQz5IOhYVeaWpgbItp_glI",
+  authDomain: "lumos-c6ccc.firebaseapp.com",
+  projectId: "lumos-c6ccc",
+  storageBucket: "lumos-c6ccc.firebasestorage.app",
+  messagingSenderId: "914721288327",
+  appId: "1:914721288327:web:6539b1770c23f007858822"
+};
 
-  const COLLECTION_ROOT = "experience_journal"; // fixed collection name
+const COLLECTION = "experience_journal";
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
 
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const db = getFirestore(app);
-  const provider = new GoogleAuthProvider();
+let allEntries = [];
+let editingId = null;
 
-  let allEntries = [];
-  let currentUser = null;
-  let editingId = null;
+// ── helpers ──────────────────────────────────────
+function esc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
-  // ─── Utils ───────────────────────────────────────────
-  function entriesRef() {
-    return collection(db, COLLECTION_ROOT);
+function fmtDate(ts){
+  if(!ts) return "";
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  const now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if(diff < 60) return "剛剛";
+  if(diff < 3600) return Math.floor(diff/60) + " 分鐘前";
+  if(diff < 86400) return Math.floor(diff/3600) + " 小時前";
+  if(diff < 86400*7) return Math.floor(diff/86400) + " 天前";
+  return d.toLocaleDateString("zh-TW",{month:"short",day:"numeric",year:"numeric"});
+}
+
+function hl(text, q){
+  if(!q) return esc(text);
+  const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")})`, "gi");
+  return esc(text).replace(re,'<mark>$1</mark>');
+}
+
+// Parse "一句話" input:
+// Format: 標題 #標籤 #標籤 @類別 | 感想內容
+// Or just: 感想內容（no title）
+function parseInput(raw){
+  raw = raw.trim();
+  let title = "", content = "", tags = "", category = "";
+
+  // split on first "|"
+  const pipeIdx = raw.indexOf("|");
+  let left = pipeIdx >= 0 ? raw.slice(0, pipeIdx).trim() : "";
+  content = pipeIdx >= 0 ? raw.slice(pipeIdx+1).trim() : raw;
+
+  if(left){
+    // extract @category
+    left = left.replace(/@(\S+)/g, (_, c) => { category = c; return ""; }).trim();
+    // extract #tags
+    left = left.replace(/#(\S+)/g, (_, t) => { tags += (tags?",":"") + t; return ""; }).trim();
+    title = left;
   }
 
-  function fmtDate(ts) {
-    if (!ts) return "";
-    const d = ts.toDate ? ts.toDate() : new Date(ts);
-    return d.toLocaleDateString("zh-TW", { year: "numeric", month: "short", day: "numeric" });
+  if(!title && content){
+    // use first 20 chars of content as title
+    title = content.length > 25 ? content.slice(0,22)+"…" : content;
   }
 
-  function highlight(text, q) {
-    if (!q) return escHtml(text);
-    const safe = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`(${safe})`, "gi");
-    return escHtml(text).replace(re, '<mark>$1</mark>');
-  }
+  return { title, content: content||title, tags, category };
+}
 
-  function escHtml(s) {
-    return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+// ── render ───────────────────────────────────────
+function renderEntries(entries, q=""){
+  const el = document.getElementById("entry-list");
+  if(!entries.length){
+    el.innerHTML = `<div class="empty"><span>${q?"找不到符合的記錄 🔍":"開始記下第一條經驗 ✍️"}</span></div>`;
+    return;
   }
+  el.innerHTML = entries.map(e => `
+    <div class="card" data-id="${e.id}">
+      <div class="card-top">
+        <div class="card-badges">
+          ${e.category ? `<span class="badge-cat">${esc(e.category)}</span>` : ""}
+          ${(e.tags||"").split(",").filter(Boolean).map(t=>`<span class="badge-tag">#${hl(t.trim(),q)}</span>`).join("")}
+        </div>
+        <div class="card-time">${fmtDate(e.createdAt)}</div>
+      </div>
+      <div class="card-title">${hl(e.title,q)}</div>
+      ${e.content !== e.title ? `<div class="card-content">${hl(e.content,q)}</div>` : ""}
+      <div class="card-actions">
+        <button class="btn-edit" data-id="${e.id}">編輯</button>
+        <button class="btn-del" data-id="${e.id}">刪除</button>
+      </div>
+    </div>
+  `).join("");
 
-  // ─── Fuzzy search ─────────────────────────────────────
-  function searchEntries(entries, q) {
-    if (!q.trim()) return entries;
-    const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-    return entries.filter(e => {
-      const haystack = [
-        e.title, e.content, e.tags, e.category
-      ].join(" ").toLowerCase();
-      return terms.every(t => haystack.includes(t));
-    }).sort((a, b) => {
-      // score: title match first
-      const scoreA = [a.title, a.tags].join(" ").toLowerCase().includes(terms[0]) ? 1 : 0;
-      const scoreB = [b.title, b.tags].join(" ").toLowerCase().includes(terms[0]) ? 1 : 0;
-      return scoreB - scoreA;
+  el.querySelectorAll(".btn-edit").forEach(b => b.addEventListener("click", () => startEdit(b.dataset.id)));
+  el.querySelectorAll(".btn-del").forEach(b => b.addEventListener("click", () => delEntry(b.dataset.id)));
+}
+
+function applyFilter(){
+  const q = document.getElementById("search").value.trim();
+  const cat = document.getElementById("cat-filter").value;
+  let res = allEntries;
+  if(cat) res = res.filter(e => e.category === cat);
+  if(q){
+    const terms = q.toLowerCase().split(/\s+/);
+    res = res.filter(e => {
+      const hay = [e.title,e.content,e.tags,e.category].join(" ").toLowerCase();
+      return terms.every(t => hay.includes(t));
     });
   }
+  renderEntries(res, q);
+  document.getElementById("count").textContent = `${res.length} / ${allEntries.length} 條`;
+}
 
-  // ─── Render ───────────────────────────────────────────
-  function renderEntries(entries, q = "") {
-    const list = document.getElementById("entry-list");
-    if (!entries.length) {
-      list.innerHTML = `<div class="empty-state">
-        <div class="empty-icon">📖</div>
-        <p>${q ? "找不到符合的記錄" : "還沒有任何記錄，開始記下第一條經驗吧！"}</p>
-      </div>`;
-      return;
-    }
-    list.innerHTML = entries.map(e => `
-      <div class="entry-card" data-id="${e.id}">
-        <div class="entry-dot"></div>
-        <div class="entry-body">
-          <div class="entry-header">
-            <div class="entry-meta-left">
-              ${e.category ? `<span class="category-badge">${escHtml(e.category)}</span>` : ""}
-              <span class="entry-date">${fmtDate(e.createdAt)}</span>
-            </div>
-            <div class="entry-actions">
-              <button class="btn-icon" onclick="window._editEntry('${e.id}')" title="編輯">✏️</button>
-              <button class="btn-icon btn-danger" onclick="window._deleteEntry('${e.id}')" title="刪除">🗑️</button>
-            </div>
-          </div>
-          <h3 class="entry-title">${highlight(e.title, q)}</h3>
-          <p class="entry-content">${highlight(e.content, q)}</p>
-          ${e.tags ? `<div class="entry-tags">${e.tags.split(",").map(t => `<span class="tag">${highlight(t.trim(), q)}</span>`).join("")}</div>` : ""}
-          ${e.updatedAt && e.updatedAt.seconds !== (e.createdAt && e.createdAt.seconds)
-            ? `<div class="entry-updated">更新於 ${fmtDate(e.updatedAt)}</div>` : ""}
-        </div>
-      </div>
-    `).join("");
-  }
+function populateCats(){
+  const sel = document.getElementById("cat-filter");
+  const cur = sel.value;
+  const cats = [...new Set(allEntries.map(e=>e.category).filter(Boolean))].sort();
+  sel.innerHTML = `<option value="">所有類別</option>`+cats.map(c=>`<option ${c===cur?"selected":""} value="${esc(c)}">${esc(c)}</option>`).join("");
+}
 
-  function renderStats(entries) {
-    const el = document.getElementById("stats");
-    const cats = [...new Set(entries.map(e => e.category).filter(Boolean))];
-    el.textContent = `共 ${entries.length} 條記錄${cats.length ? `・${cats.length} 個類別` : ""}`;
-  }
+// ── data ops ─────────────────────────────────────
+async function loadEntries(){
+  const snap = await getDocs(query(collection(db,COLLECTION), orderBy("createdAt","desc")));
+  allEntries = snap.docs.map(d=>({id:d.id,...d.data()}));
+  populateCats();
+  applyFilter();
+}
 
-  // ─── Data ops ─────────────────────────────────────────
-  async function loadEntries() {
-    const q = query(entriesRef(), orderBy("createdAt", "desc"));
-    const snap = await getDocs(q);
-    allEntries = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    applySearch();
-    renderStats(allEntries);
-    populateCategoryFilter();
-  }
+async function submitQuick(){
+  const inp = document.getElementById("quick-input");
+  const raw = inp.value.trim();
+  if(!raw) return;
 
-  function applySearch() {
-    const q = document.getElementById("search").value;
-    const cat = document.getElementById("cat-filter").value;
-    let results = allEntries;
-    if (cat) results = results.filter(e => e.category === cat);
-    results = searchEntries(results, q);
-    renderEntries(results, q);
-  }
+  const parsed = parseInput(raw);
+  inp.value = "";
+  autoResize(inp);
 
-  function populateCategoryFilter() {
-    const sel = document.getElementById("cat-filter");
-    const current = sel.value;
-    const cats = [...new Set(allEntries.map(e => e.category).filter(Boolean))].sort();
-    sel.innerHTML = `<option value="">全部類別</option>` +
-      cats.map(c => `<option value="${escHtml(c)}" ${c === current ? "selected" : ""}>${escHtml(c)}</option>`).join("");
-  }
-
-  async function saveEntry() {
-    const title = document.getElementById("f-title").value.trim();
-    const content = document.getElementById("f-content").value.trim();
-    const tags = document.getElementById("f-tags").value.trim();
-    const category = document.getElementById("f-category").value.trim();
-    if (!title || !content) {
-      showToast("請填寫標題和內容", "error"); return;
-    }
-    const saveBtn = document.getElementById("save-btn");
-    saveBtn.disabled = true;
-    try {
-      if (editingId) {
-        await updateDoc(doc(db, COLLECTION_ROOT, editingId), {
-          title, content, tags, category,
-          updatedAt: serverTimestamp()
-        });
-        showToast("已更新記錄 ✓");
-      } else {
-        await addDoc(entriesRef(), {
-          title, content, tags, category,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-        showToast("已儲存記錄 ✓");
-      }
-      closeModal();
-      await loadEntries();
-    } catch (err) {
-      showToast("儲存失敗：" + err.message, "error");
-    }
-    saveBtn.disabled = false;
-  }
-
-  window._editEntry = async (id) => {
-    const e = allEntries.find(x => x.id === id);
-    if (!e) return;
-    editingId = id;
-    document.getElementById("f-title").value = e.title || "";
-    document.getElementById("f-content").value = e.content || "";
-    document.getElementById("f-tags").value = e.tags || "";
-    document.getElementById("f-category").value = e.category || "";
-    document.getElementById("modal-heading").textContent = "編輯記錄";
-    openModal();
-  };
-
-  window._deleteEntry = async (id) => {
-    if (!confirm("確定要刪除這條記錄嗎？")) return;
-    await deleteDoc(doc(db, COLLECTION_ROOT, id));
-    showToast("已刪除");
-    await loadEntries();
-  };
-
-  // ─── Modal ────────────────────────────────────────────
-  function openModal() {
-    document.getElementById("modal").classList.add("open");
-    document.getElementById("f-title").focus();
-  }
-  function closeModal() {
-    document.getElementById("modal").classList.remove("open");
+  if(editingId){
+    await updateDoc(doc(db,COLLECTION,editingId),{
+      ...parsed, updatedAt: serverTimestamp()
+    });
     editingId = null;
-    document.getElementById("entry-form").reset();
-    document.getElementById("modal-heading").textContent = "新增記錄";
+    document.getElementById("submit-btn").textContent = "記下來";
+    document.getElementById("edit-hint").style.display = "none";
+    toast("已更新 ✓");
+  } else {
+    await addDoc(collection(db,COLLECTION),{
+      ...parsed, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    });
+    toast("已記下 ✓");
   }
+  await loadEntries();
+}
 
-  // ─── Toast ────────────────────────────────────────────
-  function showToast(msg, type = "success") {
-    const t = document.getElementById("toast");
-    t.textContent = msg;
-    t.className = "toast show " + type;
-    setTimeout(() => t.className = "toast", 2500);
-  }
+function startEdit(id){
+  const e = allEntries.find(x=>x.id===id);
+  if(!e) return;
+  editingId = id;
+  // reconstruct input string
+  let val = e.title || "";
+  if(e.category) val += ` @${e.category}`;
+  if(e.tags) val += " " + e.tags.split(",").map(t=>`#${t.trim()}`).join(" ");
+  if(e.content && e.content !== e.title) val += ` | ${e.content}`;
+  const inp = document.getElementById("quick-input");
+  inp.value = val;
+  inp.focus();
+  autoResize(inp);
+  document.getElementById("submit-btn").textContent = "更新";
+  document.getElementById("edit-hint").style.display = "inline";
+  inp.scrollIntoView({behavior:"smooth", block:"center"});
+}
 
-  // ─── Auth ─────────────────────────────────────────────
-  onAuthStateChanged(auth, async user => {
-    if (user) {
-      currentUser = user;
-      document.getElementById("login-screen").style.display = "none";
-      document.getElementById("app").style.display = "flex";
-      document.getElementById("user-name").textContent = user.displayName || user.email;
-      document.getElementById("user-avatar").src = user.photoURL || "";
-      try {
-        await loadEntries();
-      } catch (err) {
-        // Firestore rules blocked — no permission
-        await signOut(auth);
-        document.getElementById("auth-error").textContent = "此帳號沒有存取權限。";
-        document.getElementById("login-screen").style.display = "flex";
-        document.getElementById("app").style.display = "none";
-      }
-    } else {
+async function delEntry(id){
+  if(!confirm("刪除這條記錄？")) return;
+  await deleteDoc(doc(db,COLLECTION,id));
+  toast("已刪除");
+  await loadEntries();
+}
+
+function cancelEdit(){
+  editingId = null;
+  document.getElementById("quick-input").value = "";
+  autoResize(document.getElementById("quick-input"));
+  document.getElementById("submit-btn").textContent = "記下來";
+  document.getElementById("edit-hint").style.display = "none";
+}
+
+function autoResize(el){
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 160) + "px";
+}
+
+function toast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(()=>t.classList.remove("show"), 2000);
+}
+
+// ── auth ─────────────────────────────────────────
+onAuthStateChanged(auth, async user => {
+  if(user){
+    document.getElementById("login-screen").style.display = "none";
+    document.getElementById("app").style.display = "block";
+    document.getElementById("user-avatar").src = user.photoURL || "";
+    document.getElementById("user-avatar").title = user.displayName || user.email;
+    try { await loadEntries(); }
+    catch(err){
+      await signOut(auth);
+      document.getElementById("auth-error").textContent = "此帳號沒有存取權限。";
       document.getElementById("login-screen").style.display = "flex";
       document.getElementById("app").style.display = "none";
     }
+  } else {
+    document.getElementById("login-screen").style.display = "flex";
+    document.getElementById("app").style.display = "none";
+  }
+});
+
+window.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("google-login").addEventListener("click", async () => {
+    document.getElementById("auth-error").textContent = "";
+    try { await signInWithPopup(auth, provider); }
+    catch(e){ document.getElementById("auth-error").textContent = "登入失敗：" + e.message; }
   });
 
-  // ─── Event bindings ───────────────────────────────────
-  window.addEventListener("DOMContentLoaded", () => {
-    document.getElementById("google-login").addEventListener("click", async () => {
-      document.getElementById("auth-error").textContent = "";
-      try { await signInWithPopup(auth, provider); }
-      catch (e) { document.getElementById("auth-error").textContent = "登入失敗：" + e.message; }
-    });
+  document.getElementById("logout-btn").addEventListener("click", () => signOut(auth));
 
-    document.getElementById("logout-btn").addEventListener("click", () => signOut(auth));
-
-    document.getElementById("new-entry-btn").addEventListener("click", () => {
-      editingId = null;
-      document.getElementById("entry-form").reset();
-      document.getElementById("modal-heading").textContent = "新增記錄";
-      openModal();
-    });
-
-    document.getElementById("close-modal").addEventListener("click", closeModal);
-    document.getElementById("cancel-btn").addEventListener("click", closeModal);
-    document.getElementById("modal").addEventListener("click", e => {
-      if (e.target === document.getElementById("modal")) closeModal();
-    });
-
-    document.getElementById("save-btn").addEventListener("click", saveEntry);
-
-    document.getElementById("search").addEventListener("input", applySearch);
-    document.getElementById("cat-filter").addEventListener("change", applySearch);
-
-    // Cmd/Ctrl+Enter to save
-    document.addEventListener("keydown", e => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        if (document.getElementById("modal").classList.contains("open")) saveEntry();
-      }
-    });
+  const inp = document.getElementById("quick-input");
+  inp.addEventListener("input", () => autoResize(inp));
+  inp.addEventListener("keydown", e => {
+    if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submitQuick(); }
+    if(e.key === "Escape") cancelEdit();
   });
+
+  document.getElementById("submit-btn").addEventListener("click", submitQuick);
+  document.getElementById("cancel-edit").addEventListener("click", cancelEdit);
+  document.getElementById("search").addEventListener("input", applyFilter);
+  document.getElementById("cat-filter").addEventListener("change", applyFilter);
+});
 </script>
 
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Inter:wght@300;400;500;600&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#F5F6FA;
+  --white:#FFFFFF;
+  --blue:#4F6EF7;
+  --blue-light:#EEF1FE;
+  --blue-dark:#3654d6;
+  --text:#1A1D23;
+  --muted:#8A8F9E;
+  --border:#E4E6EE;
+  --radius:14px;
+  --shadow:0 2px 12px rgba(0,0,0,.07);
+  --shadow-md:0 4px 24px rgba(0,0,0,.10);
+}
+html,body{min-height:100%;background:var(--bg);font-family:'Noto Sans TC',sans-serif;color:var(--text);font-size:15px}
 
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Login ── */
+#login-screen{
+  min-height:100vh;display:none;flex-direction:column;
+  align-items:center;justify-content:center;gap:32px;
+  background:var(--bg);
+}
+.login-brand{font-family:'Caveat',cursive;font-size:2.6rem;font-weight:700;color:var(--blue);letter-spacing:.01em}
+#google-login{
+  width:52px;height:52px;border-radius:50%;border:2px solid var(--border);
+  background:var(--white);cursor:pointer;display:flex;align-items:center;justify-content:center;
+  box-shadow:var(--shadow-md);transition:transform .15s,box-shadow .15s;
+}
+#google-login:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(0,0,0,.13)}
+#google-login img{width:26px}
+#auth-error{color:#e03e3e;font-size:.82rem;text-align:center;max-width:280px}
 
-  :root {
-    --navy: #1B2340;
-    --navy-light: #252f52;
-    --navy-border: #2e3d6a;
-    --cream: #F8F4EC;
-    --cream-dim: #ede8dc;
-    --ink: #1a1a2e;
-    --ink-muted: #4a4f6a;
-    --gold: #C9A84C;
-    --gold-light: #e8c96a;
-    --rust: #c0533a;
-    --green: #2e8b57;
-    --radius: 14px;
-    --shadow: 0 4px 24px rgba(0,0,0,.25);
-  }
+/* ── App ── */
+#app{display:none;min-height:100vh}
 
-  html, body { height: 100%; background: var(--navy); font-family: 'Inter', sans-serif; color: var(--cream); }
+/* ── Header ── */
+header{
+  background:var(--white);border-bottom:1px solid var(--border);
+  height:56px;display:flex;align-items:center;padding:0 20px;
+  justify-content:space-between;position:sticky;top:0;z-index:100;
+  box-shadow:0 1px 4px rgba(0,0,0,.05);
+}
+.brand{font-family:'Caveat',cursive;font-size:1.5rem;font-weight:700;color:var(--blue)}
+.header-right{display:flex;align-items:center;gap:12px}
+#user-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid var(--blue-light);cursor:default}
+#logout-btn{
+  background:none;border:1.5px solid var(--border);color:var(--muted);
+  padding:4px 12px;border-radius:20px;font-size:.78rem;cursor:pointer;
+  font-family:'Noto Sans TC',sans-serif;transition:border-color .15s,color .15s;
+}
+#logout-btn:hover{border-color:var(--blue);color:var(--blue)}
 
-  /* ── Login ── */
-  #login-screen {
-    height: 100vh; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 28px;
-    background: radial-gradient(ellipse at 40% 30%, #2a3666 0%, var(--navy) 70%);
-  }
-  .login-logo { font-family: 'Caveat', cursive; font-size: 3.2rem; color: var(--gold); letter-spacing: .02em; }
-  #google-login {
-    display: flex; align-items: center; justify-content: center;
-    width: 56px; height: 56px; border-radius: 50%;
-    background: var(--cream); border: none; cursor: pointer;
-    transition: transform .15s, box-shadow .15s;
-    box-shadow: 0 4px 16px rgba(0,0,0,.3);
-  }
-  #google-login:hover { transform: translateY(-2px) scale(1.08); box-shadow: 0 8px 24px rgba(0,0,0,.4); }
-  #google-login img { width: 28px; }
-  #auth-error { color: #ff7b7b; font-size: .85rem; text-align: center; max-width: 320px; }
+/* ── Main ── */
+.main{max-width:680px;margin:0 auto;padding:24px 16px 60px}
 
-  /* ── App shell ── */
-  #app { display: none; flex-direction: column; height: 100vh; }
+/* ── Quick input ── */
+.compose{
+  background:var(--white);border-radius:var(--radius);border:1.5px solid var(--border);
+  padding:16px;margin-bottom:8px;box-shadow:var(--shadow);
+  transition:border-color .2s,box-shadow .2s;
+}
+.compose:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px rgba(79,110,247,.1)}
+#quick-input{
+  width:100%;border:none;outline:none;resize:none;overflow:hidden;
+  font-family:'Noto Sans TC',sans-serif;font-size:.95rem;color:var(--text);
+  background:transparent;line-height:1.6;min-height:42px;
+}
+#quick-input::placeholder{color:var(--muted)}
+.compose-footer{display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px}
+.compose-hint{font-size:.72rem;color:var(--muted);line-height:1.6}
+.compose-hint code{background:var(--blue-light);color:var(--blue);padding:1px 5px;border-radius:4px;font-size:.7rem}
+.compose-btns{display:flex;gap:8px;align-items:center}
+#edit-hint{font-size:.75rem;color:var(--blue);display:none}
+#cancel-edit{background:none;border:none;color:var(--muted);font-size:.8rem;cursor:pointer;text-decoration:underline;font-family:'Noto Sans TC',sans-serif}
+#cancel-edit:hover{color:var(--text)}
+#submit-btn{
+  background:var(--blue);color:#fff;border:none;border-radius:8px;
+  padding:7px 18px;font-size:.85rem;font-weight:600;cursor:pointer;
+  font-family:'Noto Sans TC',sans-serif;transition:background .15s;
+}
+#submit-btn:hover{background:var(--blue-dark)}
 
-  /* ── Header ── */
-  header {
-    background: var(--navy-light); border-bottom: 1px solid var(--navy-border);
-    padding: 0 24px; height: 62px; display: flex; align-items: center;
-    justify-content: space-between; flex-shrink: 0; gap: 16px;
-    position: sticky; top: 0; z-index: 100;
-  }
-  .header-brand { font-family: 'Caveat', cursive; font-size: 1.7rem; color: var(--gold); white-space: nowrap; }
-  .header-right { display: flex; align-items: center; gap: 12px; }
-  .user-chip { display: flex; align-items: center; gap: 8px; }
-  #user-avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; border: 2px solid var(--gold); }
-  #user-name { font-size: .82rem; color: var(--cream-dim); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #logout-btn { background: none; border: 1px solid var(--navy-border); color: var(--cream-dim);
-    padding: 5px 12px; border-radius: 20px; font-size: .8rem; cursor: pointer; transition: background .15s; }
-  #logout-btn:hover { background: var(--navy-border); }
+/* ── Filter bar ── */
+.filter-bar{display:flex;gap:8px;margin-bottom:18px;align-items:center;flex-wrap:wrap}
+.search-wrap{flex:1;min-width:160px;position:relative}
+.search-wrap svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none}
+#search{
+  width:100%;padding:8px 12px 8px 34px;border-radius:9px;
+  border:1.5px solid var(--border);background:var(--white);
+  font-family:'Noto Sans TC',sans-serif;font-size:.88rem;color:var(--text);outline:none;
+  transition:border-color .2s;
+}
+#search:focus{border-color:var(--blue)}
+#search::placeholder{color:var(--muted)}
+#cat-filter{
+  padding:8px 12px;border-radius:9px;border:1.5px solid var(--border);
+  background:var(--white);font-family:'Noto Sans TC',sans-serif;
+  font-size:.85rem;color:var(--text);outline:none;cursor:pointer;
+}
+#cat-filter:focus{border-color:var(--blue)}
+#count{font-size:.75rem;color:var(--muted);white-space:nowrap}
 
-  /* ── Main layout ── */
-  .app-body { flex: 1; overflow: auto; padding: 28px 20px; max-width: 820px; margin: 0 auto; width: 100%; }
+/* ── Cards ── */
+#entry-list{display:flex;flex-direction:column;gap:10px}
+.card{
+  background:var(--white);border-radius:var(--radius);padding:16px 18px;
+  border:1.5px solid var(--border);box-shadow:var(--shadow);
+  transition:box-shadow .15s,transform .15s;
+  animation:fadeUp .2s ease both;
+}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
+.card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap}
+.card-badges{display:flex;gap:5px;flex-wrap:wrap}
+.badge-cat{
+  font-size:.7rem;font-weight:600;padding:2px 9px;border-radius:20px;
+  background:var(--blue);color:#fff;letter-spacing:.03em;
+}
+.badge-tag{font-size:.72rem;color:var(--blue);background:var(--blue-light);padding:2px 8px;border-radius:20px}
+.card-time{font-size:.72rem;color:var(--muted);white-space:nowrap}
+.card-title{font-weight:600;font-size:1rem;line-height:1.4;margin-bottom:5px}
+.card-content{font-size:.88rem;color:#3f4455;line-height:1.65;white-space:pre-wrap}
+.card-actions{display:flex;gap:8px;margin-top:12px;opacity:0;transition:opacity .15s}
+.card:hover .card-actions{opacity:1}
+.btn-edit,.btn-del{
+  background:none;border:1px solid var(--border);border-radius:6px;
+  padding:3px 10px;font-size:.75rem;cursor:pointer;
+  font-family:'Noto Sans TC',sans-serif;transition:background .15s,color .15s,border-color .15s;
+}
+.btn-edit{color:var(--blue)}
+.btn-edit:hover{background:var(--blue-light);border-color:var(--blue)}
+.btn-del{color:var(--muted)}
+.btn-del:hover{background:#fef0f0;border-color:#e03e3e;color:#e03e3e}
+mark{background:#fff3b0;border-radius:2px;padding:0 1px}
 
-  /* ── Toolbar ── */
-  .toolbar { display: flex; gap: 10px; margin-bottom: 22px; flex-wrap: wrap; align-items: center; }
-  .search-wrap { flex: 1; min-width: 200px; position: relative; }
-  .search-wrap svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); opacity: .5; pointer-events: none; }
-  #search {
-    width: 100%; padding: 10px 14px 10px 38px; border-radius: 10px;
-    background: var(--navy-light); border: 1px solid var(--navy-border);
-    color: var(--cream); font-size: .93rem; outline: none;
-    transition: border-color .2s;
-  }
-  #search:focus { border-color: var(--gold); }
-  #search::placeholder { color: var(--ink-muted); }
-  #cat-filter {
-    padding: 10px 14px; border-radius: 10px; background: var(--navy-light);
-    border: 1px solid var(--navy-border); color: var(--cream); font-size: .88rem;
-    cursor: pointer; outline: none;
-  }
-  #cat-filter:focus { border-color: var(--gold); }
-  #new-entry-btn {
-    padding: 10px 20px; border-radius: 10px; background: var(--gold);
-    border: none; color: var(--ink); font-weight: 600; font-size: .9rem;
-    cursor: pointer; white-space: nowrap; transition: background .15s;
-  }
-  #new-entry-btn:hover { background: var(--gold-light); }
-  #stats { font-size: .78rem; color: var(--ink-muted); width: 100%; }
+.empty{text-align:center;padding:60px 20px;color:var(--muted);font-size:.95rem}
 
-  /* ── Timeline ── */
-  #entry-list { display: flex; flex-direction: column; gap: 0; position: relative; padding-left: 22px; }
-  #entry-list::before {
-    content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px;
-    background: linear-gradient(to bottom, var(--gold) 0%, var(--navy-border) 100%);
-  }
+/* ── Toast ── */
+#toast{
+  position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(80px);
+  background:var(--text);color:#fff;padding:9px 22px;border-radius:50px;
+  font-size:.85rem;z-index:999;transition:transform .25s;pointer-events:none;
+  box-shadow:var(--shadow-md);white-space:nowrap;
+}
+#toast.show{transform:translateX(-50%) translateY(0)}
 
-  .entry-card {
-    position: relative; display: flex; gap: 18px; padding-bottom: 22px;
-    animation: fadeUp .3s ease both;
-  }
-  @keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
-
-  .entry-dot {
-    position: absolute; left: -22px; top: 18px;
-    width: 14px; height: 14px; border-radius: 50%;
-    background: var(--gold); border: 3px solid var(--navy);
-    flex-shrink: 0; box-shadow: 0 0 0 2px var(--gold);
-    transition: box-shadow .2s;
-  }
-  .entry-card:hover .entry-dot { box-shadow: 0 0 0 4px rgba(201,168,76,.35); }
-
-  .entry-body {
-    flex: 1; background: var(--cream); color: var(--ink); border-radius: var(--radius);
-    padding: 16px 18px; box-shadow: var(--shadow); transition: transform .15s;
-  }
-  .entry-card:hover .entry-body { transform: translateX(3px); }
-
-  .entry-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .entry-meta-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .entry-date { font-size: .75rem; color: var(--ink-muted); }
-  .category-badge {
-    font-size: .7rem; font-weight: 600; padding: 2px 9px; border-radius: 20px;
-    background: var(--navy); color: var(--gold); letter-spacing: .03em;
-  }
-  .entry-actions { display: flex; gap: 4px; opacity: 0; transition: opacity .2s; }
-  .entry-card:hover .entry-actions { opacity: 1; }
-  .btn-icon {
-    background: none; border: none; cursor: pointer; font-size: 1rem;
-    padding: 4px 6px; border-radius: 6px; transition: background .15s;
-  }
-  .btn-icon:hover { background: rgba(0,0,0,.08); }
-  .btn-danger:hover { background: rgba(192,83,58,.15); }
-
-  .entry-title { font-family: 'Caveat', cursive; font-size: 1.45rem; font-weight: 700; margin-bottom: 6px; line-height: 1.2; }
-  .entry-content { font-size: .88rem; line-height: 1.65; color: #2d2d40; white-space: pre-wrap; }
-  .entry-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-  .tag {
-    font-size: .72rem; padding: 3px 10px; border-radius: 20px;
-    background: var(--cream-dim); color: var(--ink-muted); border: 1px solid #d6d0c4;
-  }
-  .entry-updated { font-size: .7rem; color: var(--ink-muted); margin-top: 8px; text-align: right; }
-  mark { background: #ffe08a; border-radius: 2px; padding: 0 1px; }
-
-  .empty-state { text-align: center; padding: 60px 20px; color: var(--cream-dim); opacity: .5; }
-  .empty-icon { font-size: 3rem; margin-bottom: 14px; }
-
-  /* ── Modal ── */
-  #modal {
-    display: none; position: fixed; inset: 0; background: rgba(10,14,30,.7);
-    backdrop-filter: blur(4px); z-index: 200; align-items: center; justify-content: center; padding: 20px;
-  }
-  #modal.open { display: flex; }
-  .modal-box {
-    background: var(--navy-light); border: 1px solid var(--navy-border);
-    border-radius: 18px; padding: 28px; width: 100%; max-width: 560px;
-    box-shadow: 0 20px 60px rgba(0,0,0,.5);
-    animation: slideUp .25s ease;
-  }
-  @keyframes slideUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:none; } }
-  .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
-  #modal-heading { font-family: 'Caveat', cursive; font-size: 1.6rem; color: var(--gold); }
-  #close-modal { background: none; border: none; color: var(--cream-dim); font-size: 1.4rem; cursor: pointer; line-height: 1; }
-  .form-group { margin-bottom: 16px; }
-  label { display: block; font-size: .78rem; font-weight: 500; color: var(--cream-dim); margin-bottom: 6px; letter-spacing: .05em; text-transform: uppercase; }
-  input[type=text], textarea {
-    width: 100%; background: var(--navy); border: 1px solid var(--navy-border);
-    color: var(--cream); border-radius: 10px; padding: 10px 14px;
-    font-size: .93rem; font-family: 'Inter', sans-serif; outline: none;
-    transition: border-color .2s; resize: vertical;
-  }
-  input[type=text]:focus, textarea:focus { border-color: var(--gold); }
-  textarea { min-height: 130px; }
-  .form-hint { font-size: .72rem; color: var(--ink-muted); margin-top: 4px; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
-  #cancel-btn { background: none; border: 1px solid var(--navy-border); color: var(--cream-dim);
-    padding: 9px 20px; border-radius: 10px; cursor: pointer; font-size: .9rem; }
-  #save-btn { background: var(--gold); border: none; color: var(--ink);
-    padding: 9px 22px; border-radius: 10px; font-weight: 600; cursor: pointer;
-    font-size: .9rem; transition: background .15s; }
-  #save-btn:hover:not(:disabled) { background: var(--gold-light); }
-  #save-btn:disabled { opacity: .5; cursor: not-allowed; }
-
-  /* ── Toast ── */
-  .toast {
-    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(100px);
-    background: var(--ink); color: var(--cream); padding: 10px 22px;
-    border-radius: 50px; font-size: .88rem; z-index: 999;
-    transition: transform .3s; pointer-events: none; white-space: nowrap;
-    box-shadow: 0 4px 20px rgba(0,0,0,.4);
-  }
-  .toast.show { transform: translateX(-50%) translateY(0); }
-  .toast.success { background: #1e5c38; }
-  .toast.error { background: #6b1a1a; }
-
-  @media (max-width: 540px) {
-    header { padding: 0 14px; }
-    .app-body { padding: 18px 14px; }
-    .modal-box { padding: 20px 16px; }
-    #user-name { display: none; }
-  }
+@media(max-width:480px){
+  header{padding:0 14px}
+  .main{padding:16px 12px 60px}
+  .card-actions{opacity:1}
+}
 </style>
 </head>
 <body>
 
-<!-- Login Screen -->
 <div id="login-screen">
-  <div class="login-logo">📔 經驗書</div>
+  <div class="login-brand">📔 經驗書</div>
   <button id="google-login" title="以 Google 帳號登入">
-    <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
+    <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google"/>
   </button>
   <p id="auth-error"></p>
 </div>
 
-<!-- App -->
 <div id="app">
   <header>
-    <div class="header-brand">📔 經驗書</div>
+    <div class="brand">📔 經驗書</div>
     <div class="header-right">
-      <div class="user-chip">
-        <img id="user-avatar" src="" alt="avatar" />
-        <span id="user-name"></span>
-      </div>
+      <img id="user-avatar" src="" alt="avatar"/>
       <button id="logout-btn">登出</button>
     </div>
   </header>
 
-  <div class="app-body">
-    <div class="toolbar">
+  <div class="main">
+
+    <!-- Quick compose -->
+    <div class="compose">
+      <textarea id="quick-input" placeholder="記下這次的感想… (Enter 送出，Shift+Enter 換行)"></textarea>
+      <div class="compose-footer">
+        <div class="compose-hint">
+          格式：<code>標題 @類別 #標籤 | 感想內容</code>（都是可選的）
+        </div>
+        <div class="compose-btns">
+          <span id="edit-hint">編輯中</span>
+          <button id="cancel-edit">取消</button>
+          <button id="submit-btn">記下來</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter -->
+    <div class="filter-bar">
       <div class="search-wrap">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
-        <input type="text" id="search" placeholder="搜尋標題、內容、標籤…" autocomplete="off" />
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search" placeholder="搜尋…" autocomplete="off"/>
       </div>
       <select id="cat-filter"></select>
-      <button id="new-entry-btn">＋ 新增記錄</button>
-      <div id="stats"></div>
+      <span id="count"></span>
     </div>
+
     <div id="entry-list"></div>
   </div>
 </div>
 
-<!-- Modal -->
-<div id="modal">
-  <div class="modal-box">
-    <div class="modal-header">
-      <h2 id="modal-heading">新增記錄</h2>
-      <button id="close-modal">✕</button>
-    </div>
-    <form id="entry-form" onsubmit="return false">
-      <div class="form-group">
-        <label>標題 *</label>
-        <input type="text" id="f-title" placeholder="這次做了什麼？" required />
-      </div>
-      <div class="form-group">
-        <label>感想與心得 *</label>
-        <textarea id="f-content" placeholder="記錄下這次的感想、遇到的問題、怎麼解決的…"></textarea>
-      </div>
-      <div class="form-group">
-        <label>類別</label>
-        <input type="text" id="f-category" placeholder="例如：工作、旅行、料理…" list="cat-suggestions" />
-        <datalist id="cat-suggestions"></datalist>
-      </div>
-      <div class="form-group">
-        <label>標籤</label>
-        <input type="text" id="f-tags" placeholder="多個標籤以逗號分隔" />
-        <div class="form-hint">例如：Vue, 前端, 好用</div>
-      </div>
-      <div class="modal-actions">
-        <button id="cancel-btn" type="button">取消</button>
-        <button id="save-btn" type="button">儲存（Ctrl+Enter）</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<div id="toast" class="toast"></div>
-
-<script type="module">
-  // Populate datalist for category autocomplete
-  import { initializeApp, getApps } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
-  // re-use the existing app (already initialized above)
-  window.addEventListener("DOMContentLoaded", () => {
-    document.addEventListener("entriesLoaded", (e) => {
-      const cats = e.detail || [];
-      const dl = document.getElementById("cat-suggestions");
-      dl.innerHTML = cats.map(c => `<option value="${c}"></option>`).join("");
-    });
-  });
-</script>
+<div id="toast"></div>
 
 </body>
 </html>
