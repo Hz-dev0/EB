@@ -25,12 +25,6 @@
     appId: "1:914721288327:web:6539b1770c23f007858822"
   };
 
-  // ─── WHITELIST ─── add allowed Google emails here
-  const WHITELIST = [
-    // "you@gmail.com",
-    // "friend@gmail.com"
-  ];
-
   const COLLECTION_ROOT = "experience_journal"; // fixed collection name
 
   const app = initializeApp(firebaseConfig);
@@ -221,12 +215,14 @@
   }
 
   // ─── Auth ─────────────────────────────────────────────
-  onAuthStateChanged(auth, user => {
+  onAuthStateChanged(auth, async user => {
     if (user) {
-      if (WHITELIST.length > 0 && !WHITELIST.includes(user.email)) {
-        signOut(auth);
+      // Force-refresh token to get latest custom claims
+      const token = await user.getIdTokenResult(true);
+      if (!token.claims.journalAccess) {
+        await signOut(auth);
         document.getElementById("auth-error").textContent =
-          `帳號 ${user.email} 不在白名單內，請聯絡管理員。`;
+          "此帳號尚未取得存取權限，請聯絡管理員。";
         document.getElementById("login-screen").style.display = "flex";
         document.getElementById("app").style.display = "none";
         return;
