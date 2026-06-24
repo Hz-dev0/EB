@@ -99,8 +99,7 @@ function renderEntries(entries, q=""){
   }
   el.innerHTML = entries.map(e => `
     <div class="card" data-id="${e.id}">
-      <div class="card-title">${hl(e.title,q)}</div>
-      ${e.content !== e.title ? `<div class="card-content">${hl(e.content,q)}</div>` : ""}
+      <div class="card-content">${hl(e.content,q)}</div>
       <div class="card-actions">
         <button class="btn-edit" data-id="${e.id}">編輯</button>
         <button class="btn-del" data-id="${e.id}">刪除</button>
@@ -166,8 +165,7 @@ function startEdit(id){
   const e = allEntries.find(x=>x.id===id);
   if(!e) return;
   editingId = id;
-  let val = e.title || "";
-  if(e.content && e.content !== e.title) val += ` | ${e.content}`;
+  let val = e.content || "";
   const inp = document.getElementById("quick-input");
   inp.value = val;
   inp.focus();
@@ -374,8 +372,8 @@ header{
 }
 .badge-tag{font-size:.72rem;color:var(--blue);background:var(--blue-light);padding:2px 8px;border-radius:20px}
 .card-time{font-size:.72rem;color:var(--muted);white-space:nowrap}
-.card-title{font-weight:600;font-size:1rem;line-height:1.4;margin-bottom:5px}
-.card-content{font-size:.88rem;color:#3f4455;line-height:1.65;white-space:pre-wrap}
+
+.card-content{font-size:.95rem;color:var(--text);line-height:1.7;white-space:pre-wrap}
 .card-actions{display:flex;gap:8px;margin-top:12px;opacity:0;transition:opacity .15s}
 .card:hover .card-actions{opacity:1}
 .btn-edit,.btn-del{
