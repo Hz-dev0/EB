@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>經驗書</title>
+<title>Journal</title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600&family=Caveat:wght@600;700&display=swap" rel="stylesheet">
@@ -92,13 +92,6 @@ function renderEntries(entries, q=""){
   }
   el.innerHTML = entries.map(e => `
     <div class="card" data-id="${e.id}">
-      <div class="card-top">
-        <div class="card-badges">
-          ${e.category ? `<span class="badge-cat">${esc(e.category)}</span>` : ""}
-          ${(e.tags||"").split(",").filter(Boolean).map(t=>`<span class="badge-tag">#${hl(t.trim(),q)}</span>`).join("")}
-        </div>
-        <div class="card-time">${fmtDate(e.createdAt)}</div>
-      </div>
       <div class="card-title">${hl(e.title,q)}</div>
       ${e.content !== e.title ? `<div class="card-content">${hl(e.content,q)}</div>` : ""}
       <div class="card-actions">
@@ -114,9 +107,7 @@ function renderEntries(entries, q=""){
 
 function applyFilter(){
   const q = document.getElementById("search").value.trim();
-  const cat = document.getElementById("cat-filter").value;
   let res = allEntries;
-  if(cat) res = res.filter(e => e.category === cat);
   if(q){
     const terms = q.toLowerCase().split(/\s+/);
     res = res.filter(e => {
@@ -128,12 +119,7 @@ function applyFilter(){
   document.getElementById("count").textContent = `${res.length} / ${allEntries.length} 條`;
 }
 
-function populateCats(){
-  const sel = document.getElementById("cat-filter");
-  const cur = sel.value;
-  const cats = [...new Set(allEntries.map(e=>e.category).filter(Boolean))].sort();
-  sel.innerHTML = `<option value="">所有類別</option>`+cats.map(c=>`<option ${c===cur?"selected":""} value="${esc(c)}">${esc(c)}</option>`).join("");
-}
+function populateCats(){}
 
 // ── data ops ─────────────────────────────────────
 async function loadEntries(){
@@ -173,10 +159,7 @@ function startEdit(id){
   const e = allEntries.find(x=>x.id===id);
   if(!e) return;
   editingId = id;
-  // reconstruct input string
   let val = e.title || "";
-  if(e.category) val += ` @${e.category}`;
-  if(e.tags) val += " " + e.tags.split(",").map(t=>`#${t.trim()}`).join(" ");
   if(e.content && e.content !== e.title) val += ` | ${e.content}`;
   const inp = document.getElementById("quick-input");
   inp.value = val;
@@ -300,7 +283,7 @@ header{
   justify-content:space-between;position:sticky;top:0;z-index:100;
   box-shadow:0 1px 4px rgba(0,0,0,.05);
 }
-.brand{font-family:'Caveat',cursive;font-size:1.5rem;font-weight:700;color:var(--blue)}
+.brand{font-size:1.2rem;color:var(--blue);font-weight:700;letter-spacing:.1em}
 .header-right{display:flex;align-items:center;gap:12px}
 #user-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid var(--blue-light);cursor:default}
 #logout-btn{
@@ -414,7 +397,7 @@ mark{background:#fff3b0;border-radius:2px;padding:0 1px}
 <body>
 
 <div id="login-screen">
-  <div class="login-brand">📔 經驗書</div>
+  
   <button id="google-login" title="以 Google 帳號登入">
     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google"/>
   </button>
@@ -423,7 +406,7 @@ mark{background:#fff3b0;border-radius:2px;padding:0 1px}
 
 <div id="app">
   <header>
-    <div class="brand">📔 經驗書</div>
+    <div class="brand">·</div>
     <div class="header-right">
       <img id="user-avatar" src="" alt="avatar"/>
       <button id="logout-btn">登出</button>
@@ -434,11 +417,9 @@ mark{background:#fff3b0;border-radius:2px;padding:0 1px}
 
     <!-- Quick compose -->
     <div class="compose">
-      <textarea id="quick-input" placeholder="記下這次的感想… (Enter 送出，Shift+Enter 換行)"></textarea>
+      <textarea id="quick-input" placeholder="記下這次的感想… Enter 送出"></textarea>
       <div class="compose-footer">
-        <div class="compose-hint">
-          格式：<code>標題 @類別 #標籤 | 感想內容</code>（都是可選的）
-        </div>
+        
         <div class="compose-btns">
           <span id="edit-hint">編輯中</span>
           <button id="cancel-edit">取消</button>
@@ -453,8 +434,8 @@ mark{background:#fff3b0;border-radius:2px;padding:0 1px}
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" id="search" placeholder="搜尋…" autocomplete="off"/>
       </div>
-      <select id="cat-filter"></select>
-      <span id="count"></span>
+      <select id="cat-filter" style="display:none"></select>
+      
     </div>
 
     <div id="entry-list"></div>
