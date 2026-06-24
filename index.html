@@ -206,10 +206,16 @@ onAuthStateChanged(auth, async user => {
     document.getElementById("user-avatar").title = user.displayName || user.email;
     try { await loadEntries(); }
     catch(err){
-      await signOut(auth);
-      document.getElementById("auth-error").textContent = "此帳號沒有存取權限。";
-      document.getElementById("login-screen").style.display = "flex";
-      document.getElementById("app").style.display = "none";
+      console.error("loadEntries error:", err.code, err.message);
+      if(err.code === "permission-denied"){
+        await signOut(auth);
+        document.getElementById("auth-error").textContent = "此帳號沒有存取權限。";
+        document.getElementById("login-screen").style.display = "flex";
+        document.getElementById("app").style.display = "none";
+      } else {
+        // other errors (network etc) — stay logged in, show toast
+        toast("載入失敗：" + err.message);
+      }
     }
   } else {
     document.getElementById("login-screen").style.display = "flex";
