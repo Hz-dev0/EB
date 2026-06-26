@@ -1,19 +1,17 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Journal</title>
-
 <meta name="theme-color" content="#4F6EF7"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="apple-mobile-web-app-title" content="經驗書"/>
 <link rel="manifest" href="manifest.json"/>
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png"/>
-
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600&family=Caveat:wght@600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600&display=swap" rel="stylesheet">
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
@@ -39,22 +37,9 @@ const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
 let allEntries = [];
-let editingId = null;
 
 // ── helpers ──────────────────────────────────────
 function esc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-
-function fmtDate(ts){
-  if(!ts) return "";
-  const d = ts.toDate ? ts.toDate() : new Date(ts);
-  const now = new Date();
-  const diff = Math.floor((now - d) / 1000);
-  if(diff < 60) return "剛剛";
-  if(diff < 3600) return Math.floor(diff/60) + " 分鐘前";
-  if(diff < 86400) return Math.floor(diff/3600) + " 小時前";
-  if(diff < 86400*7) return Math.floor(diff/86400) + " 天前";
-  return d.toLocaleDateString("zh-TW",{month:"short",day:"numeric",year:"numeric"});
-}
 
 function hl(text, q){
   if(!q) return esc(text);
@@ -62,53 +47,48 @@ function hl(text, q){
   return esc(text).replace(re,'<mark>$1</mark>');
 }
 
-// Parse "一句話" input:
-// Format: 標題 #標籤 #標籤 @類別 | 感想內容
-// Or just: 感想內容（no title）
-function parseInput(raw){
-  raw = raw.trim();
-  let title = "", content = "", tags = "", category = "";
-
-  // split on first "|"
-  const pipeIdx = raw.indexOf("|");
-  let left = pipeIdx >= 0 ? raw.slice(0, pipeIdx).trim() : "";
-  content = pipeIdx >= 0 ? raw.slice(pipeIdx+1).trim() : raw;
-
-  if(left){
-    // extract @category
-    left = left.replace(/@(\S+)/g, (_, c) => { category = c; return ""; }).trim();
-    // extract #tags
-    left = left.replace(/#(\S+)/g, (_, t) => { tags += (tags?",":"") + t; return ""; }).trim();
-    title = left;
-  }
-
-  if(!title && content){
-    // use first 20 chars of content as title
-    title = content.length > 25 ? content.slice(0,22)+"…" : content;
-  }
-
-  return { title, content: content||title, tags, category };
+function setSyncing(on){
+  const dot = document.getElementById("sync-dot");
+  dot.className = on ? "sync-dot syncing" : "sync-dot";
 }
 
 // ── render ───────────────────────────────────────
 function renderEntries(entries, q=""){
   const el = document.getElementById("entry-list");
   if(!entries.length){
-    el.innerHTML = `<div class="empty"><span>${q?"找不到符合的記錄 🔍":"開始記下第一條經驗 ✍️"}</span></div>`;
+    el.innerHTML = `<div class="empty">${q ? "找不到符合的記錄" : "打下第一條感想吧"}</div>`;
     return;
   }
   el.innerHTML = entries.map(e => `
     <div class="card" data-id="${e.id}">
-      <div class="card-content">${hl(e.content,q)}</div>
-      <div class="card-actions">
-        <button class="btn-edit" data-id="${e.id}">編輯</button>
-        <button class="btn-del" data-id="${e.id}">刪除</button>
+      <div class="card-view">
+        <div class="card-text">${hl(e.content, q)}</div>
+        <div class="card-actions">
+          <button class="btn-edit" data-id="${e.id}">編輯</button>
+          <button class="btn-del" data-id="${e.id}">刪除</button>
+        </div>
+      </div>
+      <div class="card-edit" style="display:none">
+        <textarea class="inline-editor"></textarea>
+        <div class="inline-actions">
+          <button class="btn-save">儲存</button>
+          <button class="btn-cancel">取消</button>
+        </div>
       </div>
     </div>
   `).join("");
 
-  el.querySelectorAll(".btn-edit").forEach(b => b.addEventListener("click", () => startEdit(b.dataset.id)));
+  el.querySelectorAll(".btn-edit").forEach(b => b.addEventListener("click", () => startInlineEdit(b.dataset.id)));
   el.querySelectorAll(".btn-del").forEach(b => b.addEventListener("click", () => delEntry(b.dataset.id)));
+  el.querySelectorAll(".btn-save").forEach(b => b.addEventListener("click", () => saveInlineEdit(b.closest(".card").dataset.id)));
+  el.querySelectorAll(".btn-cancel").forEach(b => b.addEventListener("click", () => cancelInlineEdit(b.closest(".card"))));
+  el.querySelectorAll(".inline-editor").forEach(ta => {
+    ta.addEventListener("keydown", e => {
+      if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); saveInlineEdit(ta.closest(".card").dataset.id); }
+      if(e.key === "Escape") cancelInlineEdit(ta.closest(".card"));
+    });
+    ta.addEventListener("input", () => autoResize(ta));
+  });
 }
 
 function applyFilter(){
@@ -117,21 +97,17 @@ function applyFilter(){
   if(q){
     const terms = q.toLowerCase().split(/\s+/);
     res = res.filter(e => {
-      const hay = [e.title,e.content,e.tags,e.category].join(" ").toLowerCase();
+      const hay = (e.content||"").toLowerCase();
       return terms.every(t => hay.includes(t));
     });
   }
   renderEntries(res, q);
-  document.getElementById("count").textContent = `${res.length} / ${allEntries.length} 條`;
 }
-
-function populateCats(){}
 
 // ── data ops ─────────────────────────────────────
 async function loadEntries(){
   const snap = await getDocs(query(collection(db,COLLECTION), orderBy("createdAt","desc")));
   allEntries = snap.docs.map(d=>({id:d.id,...d.data()}));
-  populateCats();
   applyFilter();
 }
 
@@ -139,67 +115,61 @@ async function submitQuick(){
   const inp = document.getElementById("quick-input");
   const raw = inp.value.trim();
   if(!raw) return;
-
-  const parsed = parseInput(raw);
   inp.value = "";
   autoResize(inp);
-
-  if(editingId){
-    await updateDoc(doc(db,COLLECTION,editingId),{
-      ...parsed, updatedAt: serverTimestamp()
-    });
-    editingId = null;
-    document.getElementById("submit-btn").textContent = "記下來";
-    document.getElementById("edit-hint").style.display = "none";
-    toast("已更新 ✓");
-  } else {
+  setSyncing(true);
+  try {
     await addDoc(collection(db,COLLECTION),{
-      ...parsed, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+      content: raw,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
     });
-    toast("已記下 ✓");
-  }
-  await loadEntries();
+    await loadEntries();
+  } finally { setSyncing(false); }
 }
 
-function startEdit(id){
+function startInlineEdit(id){
   const e = allEntries.find(x=>x.id===id);
   if(!e) return;
-  editingId = id;
-  let val = e.content || "";
-  const inp = document.getElementById("quick-input");
-  inp.value = val;
-  inp.focus();
-  autoResize(inp);
-  document.getElementById("submit-btn").textContent = "更新";
-  document.getElementById("edit-hint").style.display = "inline";
-  inp.scrollIntoView({behavior:"smooth", block:"center"});
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  const ta = card.querySelector(".inline-editor");
+  ta.value = e.content || "";
+  card.querySelector(".card-view").style.display = "none";
+  card.querySelector(".card-edit").style.display = "block";
+  autoResize(ta);
+  ta.focus();
+  // put cursor at end
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+}
+
+async function saveInlineEdit(id){
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  const raw = card.querySelector(".inline-editor").value.trim();
+  if(!raw) return;
+  setSyncing(true);
+  try {
+    await updateDoc(doc(db,COLLECTION,id),{ content: raw, updatedAt: serverTimestamp() });
+    await loadEntries();
+  } finally { setSyncing(false); }
+}
+
+function cancelInlineEdit(card){
+  card.querySelector(".card-view").style.display = "block";
+  card.querySelector(".card-edit").style.display = "none";
 }
 
 async function delEntry(id){
   if(!confirm("刪除這條記錄？")) return;
-  await deleteDoc(doc(db,COLLECTION,id));
-  toast("已刪除");
-  await loadEntries();
-}
-
-function cancelEdit(){
-  editingId = null;
-  document.getElementById("quick-input").value = "";
-  autoResize(document.getElementById("quick-input"));
-  document.getElementById("submit-btn").textContent = "記下來";
-  document.getElementById("edit-hint").style.display = "none";
+  setSyncing(true);
+  try {
+    await deleteDoc(doc(db,COLLECTION,id));
+    await loadEntries();
+  } finally { setSyncing(false); }
 }
 
 function autoResize(el){
   el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, 160) + "px";
-}
-
-function toast(msg){
-  const t = document.getElementById("toast");
-  t.textContent = msg;
-  t.classList.add("show");
-  setTimeout(()=>t.classList.remove("show"), 2000);
+  el.style.height = el.scrollHeight + "px";
 }
 
 // ── auth ─────────────────────────────────────────
@@ -211,15 +181,13 @@ onAuthStateChanged(auth, async user => {
     document.getElementById("user-avatar").title = user.displayName || user.email;
     try { await loadEntries(); }
     catch(err){
-      console.error("loadEntries error:", err.code, err.message);
       if(err.code === "permission-denied"){
         await signOut(auth);
         document.getElementById("auth-error").textContent = "此帳號沒有存取權限。";
         document.getElementById("login-screen").style.display = "flex";
         document.getElementById("app").style.display = "none";
       } else {
-        // other errors — stay logged in, log only
-        console.warn("loadEntries non-fatal error:", err.message);
+        console.warn("loadEntries:", err.message);
       }
     }
   } else {
@@ -241,13 +209,10 @@ window.addEventListener("DOMContentLoaded", () => {
   inp.addEventListener("input", () => autoResize(inp));
   inp.addEventListener("keydown", e => {
     if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submitQuick(); }
-    if(e.key === "Escape") cancelEdit();
   });
 
   document.getElementById("submit-btn").addEventListener("click", submitQuick);
-  document.getElementById("cancel-edit").addEventListener("click", cancelEdit);
   document.getElementById("search").addEventListener("input", applyFilter);
-  document.getElementById("cat-filter").addEventListener("change", applyFilter);
 });
 </script>
 
@@ -255,7 +220,7 @@ window.addEventListener("DOMContentLoaded", () => {
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
   --bg:#F5F6FA;
-  --white:#FFFFFF;
+  --white:#fff;
   --blue:#4F6EF7;
   --blue-light:#EEF1FE;
   --blue-dark:#3654d6;
@@ -271,10 +236,8 @@ html,body{min-height:100%;background:var(--bg);font-family:'Noto Sans TC',sans-s
 /* ── Login ── */
 #login-screen{
   min-height:100vh;display:none;flex-direction:column;
-  align-items:center;justify-content:center;gap:32px;
-  background:var(--bg);
+  align-items:center;justify-content:center;gap:24px;background:var(--bg);
 }
-.login-brand{font-family:'Caveat',cursive;font-size:2.6rem;font-weight:700;color:var(--blue);letter-spacing:.01em}
 #google-login{
   width:52px;height:52px;border-radius:50%;border:2px solid var(--border);
   background:var(--white);cursor:pointer;display:flex;align-items:center;justify-content:center;
@@ -286,97 +249,73 @@ html,body{min-height:100%;background:var(--bg);font-family:'Noto Sans TC',sans-s
 
 /* ── App ── */
 #app{display:none;min-height:100vh}
+.main{max-width:640px;margin:0 auto;padding:24px 16px 80px}
 
-/* ── Header ── */
-header{
-  background:var(--white);border-bottom:1px solid var(--border);
-  height:56px;display:flex;align-items:center;padding:0 20px;
-  justify-content:space-between;position:sticky;top:0;z-index:100;
-  box-shadow:0 1px 4px rgba(0,0,0,.05);
+/* ── Top bar (no header, just floating controls) ── */
+.top-bar{
+  display:flex;align-items:center;gap:8px;margin-bottom:16px;
 }
-.brand{font-size:1.2rem;color:var(--blue);font-weight:700;letter-spacing:.1em}
-.header-right{display:flex;align-items:center;gap:12px}
-#user-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid var(--blue-light);cursor:default}
-#logout-btn{
-  background:none;border:1.5px solid var(--border);color:var(--muted);
-  padding:4px 12px;border-radius:20px;font-size:.78rem;cursor:pointer;
-  font-family:'Noto Sans TC',sans-serif;transition:border-color .15s,color .15s;
-}
-#logout-btn:hover{border-color:var(--blue);color:var(--blue)}
-
-/* ── Main ── */
-.main{max-width:680px;margin:0 auto;padding:24px 16px 60px}
-
-/* ── Quick input ── */
-.compose{
-  background:var(--white);border-radius:var(--radius);border:1.5px solid var(--border);
-  padding:16px;margin-bottom:8px;box-shadow:var(--shadow);
-  transition:border-color .2s,box-shadow .2s;
-}
-.compose:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px rgba(79,110,247,.1)}
-#quick-input{
-  width:100%;border:none;outline:none;resize:none;overflow:hidden;
-  font-family:'Noto Sans TC',sans-serif;font-size:.95rem;color:var(--text);
-  background:transparent;line-height:1.6;min-height:42px;
-}
-#quick-input::placeholder{color:var(--muted)}
-.compose-footer{display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px}
-.compose-hint{font-size:.72rem;color:var(--muted);line-height:1.6}
-.compose-hint code{background:var(--blue-light);color:var(--blue);padding:1px 5px;border-radius:4px;font-size:.7rem}
-.compose-btns{display:flex;gap:8px;align-items:center}
-#edit-hint{font-size:.75rem;color:var(--blue);display:none}
-#cancel-edit{background:none;border:none;color:var(--muted);font-size:.8rem;cursor:pointer;text-decoration:underline;font-family:'Noto Sans TC',sans-serif}
-#cancel-edit:hover{color:var(--text)}
-#submit-btn{
-  background:var(--blue);color:#fff;border:none;border-radius:8px;
-  padding:7px 18px;font-size:.85rem;font-weight:600;cursor:pointer;
-  font-family:'Noto Sans TC',sans-serif;transition:background .15s;
-}
-#submit-btn:hover{background:var(--blue-dark)}
-
-/* ── Filter bar ── */
-.filter-bar{display:flex;gap:8px;margin-bottom:18px;align-items:center;flex-wrap:wrap}
-.search-wrap{flex:1;min-width:160px;position:relative}
+.search-wrap{flex:1;position:relative}
 .search-wrap svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none}
 #search{
-  width:100%;padding:8px 12px 8px 34px;border-radius:9px;
+  width:100%;padding:9px 12px 9px 34px;border-radius:10px;
   border:1.5px solid var(--border);background:var(--white);
   font-family:'Noto Sans TC',sans-serif;font-size:.88rem;color:var(--text);outline:none;
   transition:border-color .2s;
 }
 #search:focus{border-color:var(--blue)}
 #search::placeholder{color:var(--muted)}
-#cat-filter{
-  padding:8px 12px;border-radius:9px;border:1.5px solid var(--border);
-  background:var(--white);font-family:'Noto Sans TC',sans-serif;
-  font-size:.85rem;color:var(--text);outline:none;cursor:pointer;
+#user-avatar{width:30px;height:30px;border-radius:50%;object-fit:cover;border:2px solid var(--border);cursor:pointer;flex-shrink:0}
+#user-avatar:hover{border-color:var(--blue)}
+#logout-btn{
+  background:none;border:1.5px solid var(--border);color:var(--muted);
+  padding:5px 12px;border-radius:20px;font-size:.78rem;cursor:pointer;
+  font-family:'Noto Sans TC',sans-serif;transition:border-color .15s,color .15s;flex-shrink:0;
 }
-#cat-filter:focus{border-color:var(--blue)}
-#count{font-size:.75rem;color:var(--muted);white-space:nowrap}
+#logout-btn:hover{border-color:var(--blue);color:var(--blue)}
+
+/* ── Compose ── */
+.compose{
+  background:var(--white);border-radius:var(--radius);border:1.5px solid var(--border);
+  padding:14px 16px;margin-bottom:14px;box-shadow:var(--shadow);
+  transition:border-color .2s,box-shadow .2s;
+}
+.compose:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px rgba(79,110,247,.1)}
+#quick-input{
+  width:100%;border:none;outline:none;resize:none;overflow:hidden;
+  font-family:'Noto Sans TC',sans-serif;font-size:.95rem;color:var(--text);
+  background:transparent;line-height:1.65;min-height:40px;
+}
+#quick-input::placeholder{color:var(--muted)}
+.compose-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:10px}
+
+/* ── Sync dot ── */
+.sync-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--border);transition:background .3s;flex-shrink:0;
+}
+.sync-dot.syncing{background:var(--blue);animation:pulse .8s ease infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+#submit-btn{
+  background:var(--blue);color:#fff;border:none;border-radius:8px;
+  padding:6px 16px;font-size:.85rem;font-weight:600;cursor:pointer;
+  font-family:'Noto Sans TC',sans-serif;transition:background .15s;
+}
+#submit-btn:hover{background:var(--blue-dark)}
 
 /* ── Cards ── */
 #entry-list{display:flex;flex-direction:column;gap:10px}
 .card{
   background:var(--white);border-radius:var(--radius);padding:16px 18px;
   border:1.5px solid var(--border);box-shadow:var(--shadow);
-  transition:box-shadow .15s,transform .15s;
   animation:fadeUp .2s ease both;
 }
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-.card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
-.card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap}
-.card-badges{display:flex;gap:5px;flex-wrap:wrap}
-.badge-cat{
-  font-size:.7rem;font-weight:600;padding:2px 9px;border-radius:20px;
-  background:var(--blue);color:#fff;letter-spacing:.03em;
-}
-.badge-tag{font-size:.72rem;color:var(--blue);background:var(--blue-light);padding:2px 8px;border-radius:20px}
-.card-time{font-size:.72rem;color:var(--muted);white-space:nowrap}
-
-.card-content{font-size:.95rem;color:var(--text);line-height:1.7;white-space:pre-wrap}
+.card-text{font-size:.95rem;line-height:1.7;white-space:pre-wrap;color:var(--text)}
 .card-actions{display:flex;gap:8px;margin-top:12px;opacity:0;transition:opacity .15s}
 .card:hover .card-actions{opacity:1}
-.btn-edit,.btn-del{
+.btn-edit,.btn-del,.btn-save,.btn-cancel{
   background:none;border:1px solid var(--border);border-radius:6px;
   padding:3px 10px;font-size:.75rem;cursor:pointer;
   font-family:'Noto Sans TC',sans-serif;transition:background .15s,color .15s,border-color .15s;
@@ -385,22 +324,25 @@ header{
 .btn-edit:hover{background:var(--blue-light);border-color:var(--blue)}
 .btn-del{color:var(--muted)}
 .btn-del:hover{background:#fef0f0;border-color:#e03e3e;color:#e03e3e}
-mark{background:#fff3b0;border-radius:2px;padding:0 1px}
+.btn-save{color:#fff;background:var(--blue);border-color:var(--blue)}
+.btn-save:hover{background:var(--blue-dark)}
+.btn-cancel{color:var(--muted)}
+.btn-cancel:hover{color:var(--text)}
 
-.empty{text-align:center;padding:60px 20px;color:var(--muted);font-size:.95rem}
-
-/* ── Toast ── */
-#toast{
-  position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(80px);
-  background:var(--text);color:#fff;padding:9px 22px;border-radius:50px;
-  font-size:.85rem;z-index:999;transition:transform .25s;pointer-events:none;
-  box-shadow:var(--shadow-md);white-space:nowrap;
+/* ── Inline editor ── */
+.card-edit{padding-top:2px}
+.inline-editor{
+  width:100%;border:none;outline:none;resize:none;overflow:hidden;
+  font-family:'Noto Sans TC',sans-serif;font-size:.95rem;color:var(--text);
+  background:transparent;line-height:1.7;min-height:40px;
 }
-#toast.show{transform:translateX(-50%) translateY(0)}
+.inline-actions{display:flex;gap:8px;margin-top:10px}
+
+mark{background:#fff3b0;border-radius:2px;padding:0 1px}
+.empty{text-align:center;padding:60px 20px;color:var(--muted);font-size:.9rem}
 
 @media(max-width:480px){
-  header{padding:0 14px}
-  .main{padding:16px 12px 60px}
+  .main{padding:16px 12px 80px}
   .card-actions{opacity:1}
 }
 </style>
@@ -408,7 +350,6 @@ mark{background:#fff3b0;border-radius:2px;padding:0 1px}
 <body>
 
 <div id="login-screen">
-  
   <button id="google-login" title="以 Google 帳號登入">
     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google"/>
   </button>
@@ -416,45 +357,28 @@ mark{background:#fff3b0;border-radius:2px;padding:0 1px}
 </div>
 
 <div id="app">
-  <header>
-    <div class="brand">·</div>
-    <div class="header-right">
-      <img id="user-avatar" src="" alt="avatar"/>
-      <button id="logout-btn">登出</button>
-    </div>
-  </header>
-
   <div class="main">
 
-    <!-- Quick compose -->
-    <div class="compose">
-      <textarea id="quick-input" placeholder="記下這次的感想… Enter 送出"></textarea>
-      <div class="compose-footer">
-        
-        <div class="compose-btns">
-          <span id="edit-hint">編輯中</span>
-          <button id="cancel-edit">取消</button>
-          <button id="submit-btn">記下來</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Filter -->
-    <div class="filter-bar">
+    <div class="top-bar">
       <div class="search-wrap">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" id="search" placeholder="搜尋…" autocomplete="off"/>
       </div>
-      <select id="cat-filter" style="display:none"></select>
-      
+      <img id="user-avatar" src="" alt="avatar" title=""/>
+      <button id="logout-btn">登出</button>
+    </div>
+
+    <div class="compose">
+      <textarea id="quick-input" placeholder="記下這次的感想… Enter 送出"></textarea>
+      <div class="compose-footer">
+        <div id="sync-dot" class="sync-dot"></div>
+        <button id="submit-btn">記下來</button>
+      </div>
     </div>
 
     <div id="entry-list"></div>
   </div>
 </div>
-
-<div id="toast"></div>
-
 
 <script>
 if('serviceWorker' in navigator){
